@@ -56,11 +56,7 @@ with st.sidebar:
         t_deadline = st.number_input("Deadline Match No.", min_value=1, step=1)
         
         if st.form_submit_button("Create Tournament"):
-            if not t_name.strip():
-                st.error("Name cannot be blank.")
-            elif t_fee <= 0:
-                st.error("Fee must be > 0.")
-            else:
+            if t_name.strip() and t_fee > 0:
                 try:
                     with conn.cursor() as c:
                         c.execute("INSERT INTO tournaments (name, fee, total_matches, deadline) VALUES (%s, %s, %s, %s)", 
@@ -70,158 +66,43 @@ with st.sidebar:
                     st.rerun()
                 except psycopg2.IntegrityError:
                     st.error("Tournament name already exists.")
-                    
-    # EDIT / DELETE TOURNAMENT
-    if not tournaments_df.empty:
-        st.divider()
-        st.header("⚙️ Manage Tournaments")
-        edit_t_name = st.selectbox("Select Tournament to Manage", t_names)
-        edit_t = tournaments_df[tournaments_df['name'] == edit_t_name].iloc[0]
-        
-        with st.expander(f"Edit or Delete '{edit_t_name}'"):
-            new_t_name = st.text_input("Edit Name", value=edit_t['name'], key="et_name")
-            new_t_fee = st.number_input("Edit Fee", value=int(edit_t['fee']), step=1000, key="et_fee")
-            
-            col_u, col_d = st.columns(2)
-            if col_u.button("Update Tournament"):
-                with conn.cursor() as c:
-                    c.execute("UPDATE tournaments SET name=%s, fee=%s WHERE id=%s", (new_t_name, new_t_fee, int(edit_t['id'])))
-                st.toast("Tournament updated!", icon="🔄")
-                time.sleep(1)
-                st.rerun()
-                
-            if col_d.button("🚨 Delete", type="primary"):
-                with conn.cursor() as c:
-                    # Delete associated payments and players first to avoid orphans
-                    c.execute("DELETE FROM payments WHERE tournament_id=%s", (int(edit_t['id']),))
-                    c.execute("DELETE FROM players WHERE tournament_id=%s", (int(edit_t['id']),))
-                    c.execute("DELETE FROM tournaments WHERE id=%s", (int(edit_t['id']),))
-                st.toast("Tournament deleted!", icon="🗑️")
-                time.sleep(1)
-                st.rerun()
 
 # --- MAIN APP ---
 if tournaments_df.empty:
     st.info("👈 Please create your first tournament in the sidebar to get started.")
 else:
-    active_t_name = st.selectbox("Select Active Tournament Dashboard", t_names)
+    # Top Bar selection
+    col_sel, col_set = st.columns([3, 1])
+    with col_sel:
+        active_t_name = st.selectbox("Active Tournament Dashboard", t_names, label_visibility="collapsed")
+    
     active_t = tournaments_df[tournaments_df['name'] == active_t_name].iloc[0]
     t_id = int(active_t['id'])
-    
-    tab1, tab2, tab3 = st.tabs(["📊 Dashboard & Exports", "💸 Record & Manage Payments", "👥 Manage Roster"])
-    
-    # --- TAB 3: MANAGE ROSTER ---
-    with tab3:
-        st.subheader(f"Add Players to {active_t_name}")
-        with st.form("add_player", clear_on_submit=True):
-            p_name = st.text_input("Player Name")
-            if st.form_submit_button("Add Player"):
-                if p_name.strip():
-                    with conn.cursor() as c:
-                        c.execute("INSERT INTO players (name, tournament_id) VALUES (%s, %s)", (p_name.strip(), t_id))
-                    st.toast(f"{p_name} added!", icon="👤")
-                    time.sleep(1)
-                    st.rerun()
-                else:
-                    st.warning("Please enter a name.")
-        
-        players_df = get_players(t_id)
-        if not players_df.empty:
-            st.write("**Current Roster**")
-            st.dataframe(players_df[['name']].rename(columns={'name': 'Player Name'}), hide_index=True)
+
+    # Tournament Settings Popover
+    with col_set:
+        with st.popover("⚙️ Tournament Settings"):
+            st.write("**Edit Active Tournament**")
+            new_t_name = st.text_input("Name", value=active_t['name'])
+            new_t_fee = st.number_input("Fee", value=int(active_t['fee']), step=1000)
             
-            # EDIT / DELETE PLAYER
-            with st.expander("✏️ Edit or Delete a Player"):
-                p_dict = dict(zip(players_df.name, players_df.id))
-                edit_p_name = st.selectbox("Select Player", list(p_dict.keys()))
-                edit_p_id = int(p_dict[edit_p_name])
-                
-                new_p_name = st.text_input("New Name", value=edit_p_name)
-                
-                c1, c2 = st.columns(2)
-                if c1.button("Update Player"):
-                    with conn.cursor() as c:
-                        c.execute("UPDATE players SET name=%s WHERE id=%s", (new_p_name.strip(), edit_p_id))
-                    st.toast("Player updated!", icon="🔄")
-                    time.sleep(1)
-                    st.rerun()
-                
-                if c2.button("🚨 Delete Player", type="primary"):
-                    with conn.cursor() as c:
-                        c.execute("DELETE FROM payments WHERE player_id=%s", (edit_p_id,)) # Delete their payments first
-                        c.execute("DELETE FROM players WHERE id=%s", (edit_p_id,))
-                    st.toast("Player and their payments deleted!", icon="🗑️")
-                    time.sleep(1)
-                    st.rerun()
-        else:
-            st.info("No players added yet.")
+            if st.button("Save Settings", use_container_width=True):
+                with conn.cursor() as c:
+                    c.execute("UPDATE tournaments SET name=%s, fee=%s WHERE id=%s", (new_t_name, new_t_fee, t_id))
+                st.toast("Settings updated!", icon="🔄")
+                time.sleep(1)
+                st.rerun()
+            if st.button("🚨 Delete Tournament", type="primary", use_container_width=True):
+                with conn.cursor() as c:
+                    c.execute("DELETE FROM payments WHERE tournament_id=%s", (t_id,))
+                    c.execute("DELETE FROM players WHERE tournament_id=%s", (t_id,))
+                    c.execute("DELETE FROM tournaments WHERE id=%s", (t_id,))
+                st.toast("Tournament wiped!", icon="🗑️")
+                time.sleep(1)
+                st.rerun()
 
-    # --- TAB 2: PAYMENTS ---
-    with tab2:
-        st.subheader("Log a New Payment")
-        if players_df.empty:
-            st.warning("Add players in the 'Manage Roster' tab first.")
-        else:
-            with st.form("payment_form", clear_on_submit=True):
-                col1, col2, col3 = st.columns(3)
-                p_dict = dict(zip(players_df.name, players_df.id))
-                
-                with col1:
-                    selected_p = st.selectbox("Select Player", list(p_dict.keys()))
-                with col2:
-                    amount = st.number_input("Amount (PKR)", min_value=0, step=500)
-                with col3:
-                    match_num = st.number_input("Match #", min_value=1, max_value=int(active_t['total_matches']), step=1)
-                
-                if st.form_submit_button("Submit Payment"):
-                    if amount > 0:
-                        with conn.cursor() as c:
-                            c.execute("INSERT INTO payments (player_id, tournament_id, amount, match_number) VALUES (%s, %s, %s, %s)", 
-                                      (int(p_dict[selected_p]), t_id, amount, match_num))
-                        st.toast(f"Recorded {amount:,.0f} PKR!", icon="💸")
-                        time.sleep(1)
-                        st.rerun()
-                    else:
-                        st.error("Amount must be > 0.")
-
-            # EDIT / DELETE PAYMENT
-            payments_df = get_payments(t_id)
-            if not payments_df.empty:
-                st.divider()
-                with st.expander("✏️ Edit or Delete a Recorded Payment"):
-                    # Create a readable list of payments for the dropdown
-                    pay_options = []
-                    for _, row in payments_df.iterrows():
-                        date_str = pd.to_datetime(row['date']).strftime('%b %d')
-                        pay_options.append(f"ID {row['id']}: {row['player_name']} - {row['amount']} PKR (Match {row['match_number']} on {date_str})")
-                    
-                    selected_pay_str = st.selectbox("Select Payment to Modify", pay_options)
-                    
-                    # Extract ID from the string (e.g., "ID 5: Asad...")
-                    edit_pay_id = int(selected_pay_str.split(":")[0].replace("ID ", ""))
-                    edit_pay_row = payments_df[payments_df['id'] == edit_pay_id].iloc[0]
-                    
-                    c_a, c_b = st.columns(2)
-                    with c_a:
-                        new_amt = st.number_input("Edit Amount", value=float(edit_pay_row['amount']), step=500.0)
-                    with c_b:
-                        new_match = st.number_input("Edit Match #", value=int(edit_pay_row['match_number']), step=1)
-                    
-                    btn1, btn2 = st.columns(2)
-                    if btn1.button("Update Payment"):
-                        with conn.cursor() as c:
-                            c.execute("UPDATE payments SET amount=%s, match_number=%s WHERE id=%s", (new_amt, new_match, edit_pay_id))
-                        st.toast("Payment updated!", icon="🔄")
-                        time.sleep(1)
-                        st.rerun()
-                        
-                    if btn2.button("🚨 Delete Payment", type="primary"):
-                        with conn.cursor() as c:
-                            c.execute("DELETE FROM payments WHERE id=%s", (edit_pay_id,))
-                        st.toast("Payment deleted!", icon="🗑️")
-                        time.sleep(1)
-                        st.rerun()
-
+    tab1, tab2, tab3 = st.tabs(["📊 Dashboard", "💸 Manage Payments", "👥 Manage Roster"])
+    
     # --- TAB 1: DASHBOARD ---
     with tab1:
         payments_df = get_payments(t_id)
@@ -244,15 +125,126 @@ else:
             display_df.columns = ["Player", "Amount (PKR)", "Match #", "Date Recorded"]
             display_df['Date Recorded'] = pd.to_datetime(display_df['Date Recorded']).dt.strftime('%Y-%m-%d %I:%M %p')
             
+            # Read-only table for the dashboard
             st.dataframe(display_df, use_container_width=True, hide_index=True)
             
             csv = display_df.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label=f"📥 Download Data (CSV)",
-                data=csv,
-                file_name=f"{active_t_name.replace(' ', '_').lower()}_payments.csv",
-                mime='text/csv',
-                type="primary"
-            )
+            st.download_button("📥 Download Data (CSV)", data=csv, file_name=f"{active_t_name.replace(' ', '_').lower()}_payments.csv", mime='text/csv', type="primary")
         else:
             st.info("No payments recorded yet.")
+
+    # --- TAB 2: MANAGE PAYMENTS ---
+    with tab2:
+        players_df = get_players(t_id)
+        if players_df.empty:
+            st.warning("Add players in the 'Manage Roster' tab first.")
+        else:
+            st.write("### ➕ Log a New Payment")
+            with st.form("payment_form", clear_on_submit=True):
+                col1, col2, col3 = st.columns(3)
+                p_dict = dict(zip(players_df.name, players_df.id))
+                
+                with col1: selected_p = st.selectbox("Player", list(p_dict.keys()))
+                with col2: amount = st.number_input("Amount (PKR)", min_value=0, step=500)
+                with col3: match_num = st.number_input("Match #", min_value=1, max_value=int(active_t['total_matches']), step=1)
+                
+                if st.form_submit_button("Submit Payment"):
+                    if amount > 0:
+                        with conn.cursor() as c:
+                            c.execute("INSERT INTO payments (player_id, tournament_id, amount, match_number) VALUES (%s, %s, %s, %s)", 
+                                      (int(p_dict[selected_p]), t_id, amount, match_num))
+                        st.toast(f"Recorded {amount:,.0f} PKR!", icon="💸")
+                        time.sleep(1)
+                        st.rerun()
+            
+            st.divider()
+            st.write("### ✏️ Edit or Delete Records")
+            st.caption("Double-click a cell to edit the Amount or Match #. Select a row (checkbox on the left) and press your **Delete** key to remove it.")
+            
+            if not payments_df.empty:
+                disp_pay = payments_df[['id', 'player_name', 'amount', 'match_number', 'date']].copy()
+                disp_pay.columns = ["id", "Player", "Amount (PKR)", "Match #", "Date"]
+                
+                # Interactive Data Editor
+                st.data_editor(
+                    disp_pay,
+                    column_config={
+                        "id": None, # Hide database ID visually
+                        "Player": st.column_config.TextColumn(disabled=True),
+                        "Date": st.column_config.DatetimeColumn(disabled=True, format="MMM DD, YYYY")
+                    },
+                    num_rows="dynamic",
+                    key="pay_editor",
+                    use_container_width=True
+                )
+                
+                # Save button processes changes from the spreadsheet UI
+                if st.button("💾 Save Changes to Database", type="primary"):
+                    changes = st.session_state["pay_editor"]
+                    with conn.cursor() as c:
+                        # Process Edits
+                        for row_idx, edit in changes["edited_rows"].items():
+                            pay_id = int(disp_pay.iloc[row_idx]["id"])
+                            if "Amount (PKR)" in edit:
+                                c.execute("UPDATE payments SET amount=%s WHERE id=%s", (edit["Amount (PKR)"], pay_id))
+                            if "Match #" in edit:
+                                c.execute("UPDATE payments SET match_number=%s WHERE id=%s", (edit["Match #"], pay_id))
+                        # Process Deletes
+                        for row_idx in changes["deleted_rows"]:
+                            pay_id = int(disp_pay.iloc[row_idx]["id"])
+                            c.execute("DELETE FROM payments WHERE id=%s", (pay_id,))
+                    
+                    st.toast("Database updated!", icon="✅")
+                    time.sleep(1)
+                    st.rerun()
+            else:
+                st.info("No payments to edit yet.")
+
+    # --- TAB 3: MANAGE ROSTER ---
+    with tab3:
+        st.write("### ➕ Add Player")
+        with st.form("add_player", clear_on_submit=True):
+            col_p1, col_p2 = st.columns([3, 1])
+            with col_p1: p_name = st.text_input("Player Name", label_visibility="collapsed", placeholder="Enter player name...")
+            with col_p2: 
+                if st.form_submit_button("Add to Roster", use_container_width=True):
+                    if p_name.strip():
+                        with conn.cursor() as c:
+                            c.execute("INSERT INTO players (name, tournament_id) VALUES (%s, %s)", (p_name.strip(), t_id))
+                        st.toast(f"{p_name} added!", icon="👤")
+                        time.sleep(1)
+                        st.rerun()
+
+        st.divider()
+        st.write("### ✏️ Edit or Delete Players")
+        st.caption("Double-click a name to fix a typo. Select a row and press **Delete** to remove a player (warning: this wipes their payments too!).")
+        
+        if not players_df.empty:
+            disp_players = players_df[['id', 'name']].copy()
+            disp_players.columns = ["id", "Player Name"]
+            
+            st.data_editor(
+                disp_players,
+                column_config={"id": None},
+                num_rows="dynamic",
+                key="roster_editor",
+                use_container_width=True
+            )
+            
+            if st.button("💾 Save Roster Changes", type="primary"):
+                changes = st.session_state["roster_editor"]
+                with conn.cursor() as c:
+                    for row_idx, edit in changes["edited_rows"].items():
+                        if "Player Name" in edit:
+                            p_id = int(disp_players.iloc[row_idx]["id"])
+                            c.execute("UPDATE players SET name=%s WHERE id=%s", (edit["Player Name"], p_id))
+                    for row_idx in changes["deleted_rows"]:
+                        p_id = int(disp_players.iloc[row_idx]["id"])
+                        c.execute("DELETE FROM payments WHERE player_id=%s", (p_id,))
+                        c.execute("DELETE FROM players WHERE id=%s", (p_id,))
+                
+                st.toast("Roster updated!", icon="✅")
+                time.sleep(1)
+                st.rerun()
+        else:
+            st.info("No players added yet.")
