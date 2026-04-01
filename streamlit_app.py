@@ -12,6 +12,7 @@ def get_db_connection():
     conn.autocommit = True 
     
     with conn.cursor() as c:
+        # Create core tables
         c.execute('''CREATE TABLE IF NOT EXISTS tournaments
                      (id SERIAL PRIMARY KEY, name TEXT UNIQUE, fee REAL, total_matches INTEGER, deadline INTEGER)''')
         c.execute('''CREATE TABLE IF NOT EXISTS players
@@ -21,6 +22,13 @@ def get_db_connection():
     return conn
 
 conn = get_db_connection()
+
+# Database Migration: Safely add 'current_match' to existing databases
+try:
+    with conn.cursor() as c:
+        c.execute("ALTER TABLE tournaments ADD COLUMN current_match INTEGER DEFAULT 1")
+except psycopg2.Error:
+    pass # Column already exists, safe to ignore
 
 # --- HELPER FUNCTIONS ---
 def get_tournaments():
@@ -68,7 +76,6 @@ t_names = tournaments_df['name'].tolist() if not tournaments_df.empty else []
 with st.sidebar:
     st.header("🏆 Add Tournament")
     with st.form("new_tournament", clear_on_submit=True):
-        # Stacked for mobile
         t_name = st.text_input("Tournament Name")
         t_fee = st.number_input("Total Entry Fee", min_value=0, step=1000)
         t_matches = st.number_input("Total Matches", min_value=1, step=1)
@@ -78,7 +85,7 @@ with st.sidebar:
             if t_name.strip() and t_fee > 0:
                 try:
                     with conn.cursor() as c:
-                        c.execute("INSERT INTO tournaments (name, fee, total_matches, deadline) VALUES (%s, %s, %s, %s)", 
+                        c.execute("INSERT INTO tournaments (name, fee, total_matches, deadline, current_match) VALUES (%s, %s, %s, %s, 1)", 
                                   (t_name.strip(), t_fee, t_matches, t_deadline))
                     st.toast(f"'{t_name}' created!", icon="✅")
                     time.sleep(1)
@@ -90,25 +97,27 @@ with st.sidebar:
 if tournaments_df.empty:
     st.info("👈 Please create your first tournament in the sidebar menu to get started.")
 else:
-    # Mobile friendly top selection
     active_t_name = st.selectbox("Active Tournament Dashboard", t_names)
     active_t = tournaments_df[tournaments_df['name'] == active_t_name].iloc[0]
     t_id = int(active_t['id'])
+    # Safely get current match (defaults to 1 if missing during initial load)
+    cur_match = int(active_t.get('current_match', 1))
 
     with st.expander("⚙️ Tournament Settings (Edit/Delete)"):
         st.caption("Update the fee/name, or delete the entire tournament.")
         new_t_name = st.text_input("Name", value=active_t['name'])
         new_t_fee = st.number_input("Fee", value=int(active_t['fee']), step=1000)
+        new_t_match = st.number_input("Current Active Match", value=cur_match, min_value=1, step=1)
         
         c_save, c_del = st.columns(2)
         if c_save.button("Save Updates", use_container_width=True):
             with conn.cursor() as c:
-                c.execute("UPDATE tournaments SET name=%s, fee=%s WHERE id=%s", (new_t_name, new_t_fee, t_id))
+                c.execute("UPDATE tournaments SET name=%s, fee=%s, current_match=%s WHERE id=%s", (new_t_name, new_t_fee, new_t_match, t_id))
             st.toast("Settings updated!", icon="🔄")
             time.sleep(1)
             st.rerun()
         if c_del.button("🚨 Delete", type="primary", use_container_width=True):
-            delete_tournament_modal(t_id, active_t['name']) # Triggers the pop-up modal
+            delete_tournament_modal(t_id, active_t['name'])
 
     tab1, tab2, tab3 = st.tabs(["📊 Dash", "💸 Payments", "👥 Roster"])
     
@@ -118,15 +127,35 @@ else:
         total_collected = payments_df['amount'].sum() if not payments_df.empty else 0.0
         remaining = active_t['fee'] - total_collected
         
-        # Metrics adapt beautifully to mobile natively
+        # GRAND TOTALS
         col_a, col_b, col_c = st.columns(3)
-        col_a.metric("Fee", f"{active_t['fee']:,.0f}")
-        col_b.metric("Collected", f"{total_collected:,.0f}")
-        col_c.metric("Remaining", f"{remaining:,.0f}")
+        col_a.metric("Total Fee", f"{active_t['fee']:,.0f}")
+        col_b.metric("Total Collected", f"{total_collected:,.0f}")
+        col_c.metric("Total Remaining", f"{remaining:,.0f}")
         
-        progress_val = float(min(total_collected / active_t['fee'], 1.0)) if active_t['fee'] > 0 else 0.0
-        st.progress(progress_val)
+        st.divider()
         
+        # ACTIVE MATCH FOCUS
+        st.write(f"### 🎯 Focus: Collecting for Match {cur_match}")
+        target_per_match = active_t['fee'] / active_t['deadline'] if active_t['deadline'] > 0 else 0
+        
+        # Calculate how much was collected specifically for the current match
+        with conn.cursor() as c:
+            c.execute("SELECT SUM(amount) FROM payments WHERE tournament_id=%s AND match_number=%s", (t_id, cur_match))
+            match_collected = c.fetchone()[0] or 0.0
+            
+        st.metric(f"Match {cur_match} Progress", f"{match_collected:,.0f} / {target_per_match:,.0f} PKR")
+        
+        match_progress = float(min(match_collected / target_per_match, 1.0)) if target_per_match > 0 else 0.0
+        st.progress(match_progress)
+        
+        if st.button(f"✅ Mark Match {cur_match} Done & Start Match {cur_match + 1}", use_container_width=True, type="primary"):
+            with conn.cursor() as c:
+                c.execute("UPDATE tournaments SET current_match = current_match + 1 WHERE id=%s", (t_id,))
+            st.toast(f"Advanced to Match {cur_match + 1}!", icon="🚀")
+            time.sleep(1)
+            st.rerun()
+
         st.divider()
         st.write("### Transaction History")
         
@@ -148,13 +177,13 @@ else:
         if players_df.empty:
             st.warning("Add players in the 'Roster' tab first.")
         else:
-            st.write("### ➕ Log a Payment")
+            st.write(f"### ➕ Log Payment (Defaults to Match {cur_match})")
             with st.form("payment_form", clear_on_submit=True):
-                # Removed columns here! Stacked vertically for fat-finger mobile typing
                 p_dict = dict(zip(players_df.name, players_df.id))
                 selected_p = st.selectbox("Player", list(p_dict.keys()))
                 amount = st.number_input("Amount (PKR)", min_value=0, step=500)
-                match_num = st.number_input("Match #", min_value=1, max_value=int(active_t['total_matches']), step=1)
+                # Matches the active match by default!
+                match_num = st.number_input("Match #", min_value=1, max_value=int(active_t['total_matches']), value=cur_match, step=1)
                 
                 if st.form_submit_button("Submit Payment", use_container_width=True, type="primary"):
                     if amount > 0:
@@ -167,7 +196,6 @@ else:
             
             st.divider()
             st.write("### ✏️ Edit Records")
-            st.caption("Mobile: Tap twice to edit. Select the left box and press delete to remove.")
             
             if not payments_df.empty:
                 disp_pay = payments_df[['id', 'player_name', 'amount', 'match_number', 'date']].copy()
@@ -183,7 +211,6 @@ else:
                 
                 changes = st.session_state.get("pay_editor", {"edited_rows": {}, "deleted_rows": []})
                 
-                # Smart Confirmation for Deletions
                 if len(changes["deleted_rows"]) > 0:
                     st.error(f"⚠️ You are about to delete {len(changes['deleted_rows'])} payment(s).")
                     if st.button("🚨 Confirm Deletion", type="primary", use_container_width=True):
@@ -211,7 +238,6 @@ else:
     with tab3:
         st.write("### ➕ Add Player")
         with st.form("add_player", clear_on_submit=True):
-            # Stacked for mobile
             p_name = st.text_input("Player Name", placeholder="Enter player name...")
             if st.form_submit_button("Add to Roster", use_container_width=True, type="primary"):
                 if p_name.strip():
@@ -238,7 +264,6 @@ else:
             
             changes = st.session_state.get("roster_editor", {"edited_rows": {}, "deleted_rows": []})
             
-            # Smart Confirmation for Deletions
             if len(changes["deleted_rows"]) > 0:
                 st.error(f"⚠️ You are deleting {len(changes['deleted_rows'])} player(s). This ALSO deletes their payment history!")
                 if st.button("🚨 Confirm Deletion", type="primary", use_container_width=True):
