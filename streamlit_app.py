@@ -147,16 +147,16 @@ else:
             player_dict = dict(zip(players_df.id, players_df.name))
             
             squad_ids = st.multiselect(
-                "Select Playing Squad (defaults to everyone):", 
+                "Select Playing Squad:", 
                 options=all_player_ids, 
-                default=all_player_ids,
+                default=[], # Starts empty now!
                 format_func=lambda x: player_dict[x]
             )
             
             if squad_ids:
                 # 3. Auto-Calculate Per Head
                 per_head_calc = target_per_match / len(squad_ids) if len(squad_ids) > 0 else 0
-                st.info(f"💡 Target: {target_per_match:,.0f} PKR | Squad Size: {len(squad_ids)} | Per-Head Fee: **{per_head_calc:,.0f} PKR**")
+                st.info(f"💡 Target: {target_per_match:,.2f} PKR | Squad Size: {len(squad_ids)} | Per-Head Fee: **{per_head_calc:,.2f} PKR**")
                 
                 # Fetch existing payments to pre-check boxes
                 existing_match_pays = get_match_payments(t_id, selected_match)
@@ -172,8 +172,8 @@ else:
                         is_paid = True
                         pay_id = int(existing_record.iloc[0]['id'])
                     else:
-                        # Round to nearest 100 for cleaner numbers (e.g. 1487 -> 1500)
-                        paid_amt = round(per_head_calc / 100) * 100 
+                        # Exact calculation rounded to 2 decimal places instead of nearest 100
+                        paid_amt = round(per_head_calc, 2)
                         is_paid = False
                         pay_id = -1
                         
